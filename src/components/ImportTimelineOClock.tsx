@@ -452,6 +452,13 @@ export function ImportTimelineOClock({ onClose }: ImportTimelineOClockProps) {
 
                       <span className="text-[10px] text-muted-foreground">
                         {sub.intervals.length} interval
+                        {sub.intervals.length > 0 && ` (${formatDuration(
+                          sub.intervals.reduce((acc, int) => {
+                            const start = timeToMinutes(int.startTime);
+                            const end = timeToMinutes(int.endTime);
+                            return acc + Math.max(0, end - start);
+                          }, 0)
+                        )} aktif)`}
                       </span>
 
                       <button
