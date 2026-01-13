@@ -1,6 +1,7 @@
-import { useState } from 'react';
-import { X, Plus, Trash2, Eye, ChevronDown, ChevronRight } from 'lucide-react';
+import { useState, useRef } from 'react';
+import { X, Plus, Trash2, Eye, ChevronDown, ChevronRight, Download } from 'lucide-react';
 import { formatTimeShort } from '@/hooks/useStopwatch';
+import html2canvas from 'html2canvas';
 
 interface TimelineInterval {
   id: string;
@@ -164,6 +165,34 @@ function TimelineVisualization({ headChannels }: { headChannels: ImportHeadChann
 export function ImportTimeline({ onClose }: ImportTimelineProps) {
   const [headChannels, setHeadChannels] = useState<ImportHeadChannel[]>([]);
   const [showVisualization, setShowVisualization] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
+  const visualizationRef = useRef<HTMLDivElement>(null);
+
+  // Export visualization as PNG (FHD 1920x1080)
+  const exportToPng = async () => {
+    if (!visualizationRef.current) return;
+    
+    setIsExporting(true);
+    try {
+      const canvas = await html2canvas(visualizationRef.current, {
+        scale: 2,
+        backgroundColor: '#1a1a2e',
+        width: 1920,
+        height: 1080,
+        windowWidth: 1920,
+        windowHeight: 1080,
+      });
+      
+      const link = document.createElement('a');
+      link.download = `timeline-${Date.now()}.png`;
+      link.href = canvas.toDataURL('image/png');
+      link.click();
+    } catch (error) {
+      console.error('Export failed:', error);
+    } finally {
+      setIsExporting(false);
+    }
+  };
 
   // Add new head channel
   const addHeadChannel = () => {
@@ -508,7 +537,7 @@ export function ImportTimeline({ onClose }: ImportTimelineProps) {
 
       {/* Visualize Button */}
       {hasData && (
-        <div className="mt-4 pt-3 border-t border-border">
+        <div className="mt-4 pt-3 border-t border-border flex items-center gap-2">
           <button
             onClick={() => setShowVisualization(!showVisualization)}
             className="flex items-center gap-1.5 px-3 py-1.5 bg-accent text-accent-foreground rounded-lg text-xs font-medium hover:bg-accent/80 transition-colors"
@@ -516,6 +545,17 @@ export function ImportTimeline({ onClose }: ImportTimelineProps) {
             <Eye className="w-3.5 h-3.5" />
             {showVisualization ? 'Sembunyikan' : 'Tampilkan'} Visualisasi
           </button>
+          
+          {showVisualization && (
+            <button
+              onClick={exportToPng}
+              disabled={isExporting}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-green-600 text-white rounded-lg text-xs font-medium hover:bg-green-700 transition-colors disabled:opacity-50"
+            >
+              <Download className="w-3.5 h-3.5" />
+              {isExporting ? 'Exporting...' : 'Export PNG (FHD)'}
+            </button>
+          )}
         </div>
       )}
 
@@ -525,7 +565,9 @@ export function ImportTimeline({ onClose }: ImportTimelineProps) {
           <h4 className="text-xs font-medium text-muted-foreground mb-3 uppercase tracking-wider">
             Timeline Visualization
           </h4>
-          <TimelineVisualization headChannels={headChannels} />
+          <div ref={visualizationRef} className="p-4 bg-background rounded-lg">
+            <TimelineVisualization headChannels={headChannels} />
+          </div>
         </div>
       )}
     </div>

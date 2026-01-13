@@ -1,5 +1,6 @@
-import { useState } from 'react';
-import { X, Plus, Trash2, Eye, ChevronDown, ChevronRight } from 'lucide-react';
+import { useState, useRef } from 'react';
+import { X, Plus, Trash2, Eye, ChevronDown, ChevronRight, Download } from 'lucide-react';
+import html2canvas from 'html2canvas';
 
 interface TimelineInterval {
   id: string;
@@ -42,6 +43,11 @@ function minutesToTime(mins: number): string {
   const hours = Math.floor(mins / 60) % 24;
   const minutes = mins % 60;
   return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
+}
+
+// Calculate duration between two times in minutes
+function getDurationMinutes(startTime: string, endTime: string): number {
+  return Math.max(0, timeToMinutes(endTime) - timeToMinutes(startTime));
 }
 
 // Format duration in minutes to readable string
@@ -118,10 +124,8 @@ function TimelineVisualization({ headChannels }: { headChannels: ImportHeadChann
                 {/* Sub channel bars */}
                 {head.subChannels.map((sub) => {
                   // Calculate total active time for this sub
-                  const totalActiveMs = sub.intervals.reduce((acc, int) => {
-                    const start = timeToMinutes(int.startTime);
-                    const end = timeToMinutes(int.endTime);
-                    return acc + (end - start);
+                  const totalActiveMins = sub.intervals.reduce((acc, int) => {
+                    return acc + getDurationMinutes(int.startTime, int.endTime);
                   }, 0);
 
                   return (
@@ -167,7 +171,7 @@ function TimelineVisualization({ headChannels }: { headChannels: ImportHeadChann
                         })}
                       </div>
                       <div className="w-14 text-[10px] text-muted-foreground text-right flex-shrink-0">
-                        {formatDuration(totalActiveMs)}
+                        {formatDuration(totalActiveMins)}
                       </div>
                     </div>
                   );
@@ -200,6 +204,34 @@ function TimelineVisualization({ headChannels }: { headChannels: ImportHeadChann
 export function ImportTimelineOClock({ onClose }: ImportTimelineOClockProps) {
   const [headChannels, setHeadChannels] = useState<ImportHeadChannel[]>([]);
   const [showVisualization, setShowVisualization] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
+  const visualizationRef = useRef<HTMLDivElement>(null);
+
+  // Export visualization as PNG (FHD 1920x1080)
+  const exportToPng = async () => {
+    if (!visualizationRef.current) return;
+    
+    setIsExporting(true);
+    try {
+      const canvas = await html2canvas(visualizationRef.current, {
+        scale: 2, // Higher resolution
+        backgroundColor: '#1a1a2e',
+        width: 1920,
+        height: 1080,
+        windowWidth: 1920,
+        windowHeight: 1080,
+      });
+      
+      const link = document.createElement('a');
+      link.download = `timeline-oclock-${Date.now()}.png`;
+      link.href = canvas.toDataURL('image/png');
+      link.click();
+    } catch (error) {
+      console.error('Export failed:', error);
+    } finally {
+      setIsExporting(false);
+    }
+  };
 
   // Add new head channel
   const addHeadChannel = () => {
@@ -356,7 +388,7 @@ export function ImportTimelineOClock({ onClose }: ImportTimelineOClockProps) {
 
       <h3 className="text-sm font-semibold text-foreground mb-3">Timeline Builder (O'Clock)</h3>
       <p className="text-xs text-muted-foreground mb-4">
-        Head Channel = range waktu (07:00 → 14:00) · Sub Channel = aktivitas dalam range jam
+        Head Channel = range waktu (07:00 → 14:00) · Sub Channel = aktivitas · Timeline = start/pause intervals
       </p>
 
       {/* Builder UI */}
@@ -452,13 +484,6 @@ export function ImportTimelineOClock({ onClose }: ImportTimelineOClockProps) {
 
                       <span className="text-[10px] text-muted-foreground">
                         {sub.intervals.length} interval
-                        {sub.intervals.length > 0 && ` (${formatDuration(
-                          sub.intervals.reduce((acc, int) => {
-                            const start = timeToMinutes(int.startTime);
-                            const end = timeToMinutes(int.endTime);
-                            return acc + Math.max(0, end - start);
-                          }, 0)
-                        )} aktif)`}
                       </span>
 
                       <button
@@ -508,41 +533,80 @@ export function ImportTimelineOClock({ onClose }: ImportTimelineOClockProps) {
                               />
                             </div>
 
+                            <span className="text-muted-foreground">
+                              ({formatDuration(getDurationMinutes(interval.startTime, interval.endTime))} aktif)
+                            </span>
+
                             <button
                               onClick={() => deleteInterval(head.id, sub.id, interval.id)}
-                              className="w-4 h-4 rounded hover:bg-destructive/20 hover:text-destructive flex items-center justify-center transition-colors"
+                              className="w-4 h-4 rounded-full hover:bg-destructive/20 hover:text-destructive flex items-center justify-center transition-colors ml-auto"
                             >
-                              <Trash2 className="w-2.5 h-2.5" />
+                              <X className="w-2.5 h-2.5" />
                             </button>
                           </div>
                         ))}
+
+                        {sub.intervals.length === 0 && (
+                          <div className="text-[10px] text-muted-foreground italic pl-4">
+                            Belum ada timeline. Klik "Add Timeline" untuk menambahkan.
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
                 ))}
+
+                {head.subChannels.length === 0 && (
+                  <div className="text-xs text-muted-foreground italic pl-2">
+                    Belum ada sub channel
+                  </div>
+                )}
               </div>
             )}
           </div>
         ))}
+
+        {/* Empty state */}
+        {!hasData && (
+          <div className="text-center text-muted-foreground py-4 text-sm">
+            Klik "Add Head Channel" untuk mulai membuat timeline
+          </div>
+        )}
       </div>
 
-      {/* Visualization Toggle */}
+      {/* Visualize Button */}
       {hasData && (
-        <div className="mt-4 pt-3 border-t border-border">
+        <div className="mt-4 pt-3 border-t border-border flex items-center gap-2">
           <button
             onClick={() => setShowVisualization(!showVisualization)}
             className="flex items-center gap-1.5 px-3 py-1.5 bg-accent text-accent-foreground rounded-lg text-xs font-medium hover:bg-accent/80 transition-colors"
           >
             <Eye className="w-3.5 h-3.5" />
-            {showVisualization ? 'Hide' : 'Show'} Visualization
+            {showVisualization ? 'Sembunyikan' : 'Tampilkan'} Visualisasi
           </button>
+          
+          {showVisualization && (
+            <button
+              onClick={exportToPng}
+              disabled={isExporting}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-green-600 text-white rounded-lg text-xs font-medium hover:bg-green-700 transition-colors disabled:opacity-50"
+            >
+              <Download className="w-3.5 h-3.5" />
+              {isExporting ? 'Exporting...' : 'Export PNG (FHD)'}
+            </button>
+          )}
         </div>
       )}
 
       {/* Visualization */}
-      {showVisualization && (
-        <div className="mt-3">
-          <TimelineVisualization headChannels={headChannels} />
+      {showVisualization && hasData && (
+        <div className="mt-4 pt-4 border-t border-border">
+          <h4 className="text-xs font-medium text-muted-foreground mb-3 uppercase tracking-wider">
+            Timeline Visualization
+          </h4>
+          <div ref={visualizationRef} className="p-4 bg-background rounded-lg">
+            <TimelineVisualization headChannels={headChannels} />
+          </div>
         </div>
       )}
     </div>
