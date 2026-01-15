@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react';
-import { X, Plus, Trash2, Eye, ChevronDown, ChevronRight, Download } from 'lucide-react';
+import { X, Plus, Trash2, Eye, ChevronDown, ChevronRight, Download, Scissors } from 'lucide-react';
 import html2canvas from 'html2canvas';
 
 interface TimelineInterval {
@@ -13,6 +13,7 @@ interface ImportSubChannel {
   name: string;
   intervals: TimelineInterval[];
   expanded: boolean;
+  isCutoff?: boolean; // Cutoff timer flag - non-operational time
 }
 
 interface ImportHeadChannel {
@@ -77,32 +78,50 @@ function TimelineVisualization({ headChannels }: { headChannels: ImportHeadChann
         
         if (totalDurationMins <= 0) return null;
 
-        // Generate time markers based on head channel time range
-        const stepMinutes = totalDurationMins > 360 ? 60 : totalDurationMins > 120 ? 30 : totalDurationMins > 60 ? 15 : 10;
-        const timeMarkers: number[] = [];
-        for (let i = headStartMins; i <= headEndMins; i += stepMinutes) {
-          timeMarkers.push(i);
+        // Calculate total cutoff time from cutoff sub-channels
+        const cutoffSubs = head.subChannels.filter(s => s.isCutoff);
+        const totalCutoffMins = cutoffSubs.reduce((acc, sub) => {
+          return acc + sub.intervals.reduce((intAcc, int) => {
+            return intAcc + getDurationMinutes(int.startTime, int.endTime);
+          }, 0);
+        }, 0);
+        
+        // Net operational duration
+        const netOperationalMins = totalDurationMins - totalCutoffMins;
+
+        // Generate time markers from 0m with 30m intervals
+        const timeMarkers: { mins: number; label: string }[] = [];
+        let accumulatedMins = 0;
+        for (let i = 0; i <= totalDurationMins; i += 30) {
+          timeMarkers.push({ mins: i, label: `${i}m` });
+          accumulatedMins = i;
         }
-        if (timeMarkers[timeMarkers.length - 1] !== headEndMins) {
-          timeMarkers.push(headEndMins);
+        // Add final marker if not already at end
+        if (accumulatedMins < totalDurationMins) {
+          timeMarkers.push({ mins: totalDurationMins, label: `${totalDurationMins}m` });
         }
 
         return (
           <div key={head.id} className="bg-muted/30 rounded-lg p-3">
-            <div className="text-xs font-medium text-muted-foreground mb-2">
-              Timeline: {head.name} ({head.startTime} → {head.endTime} = {formatDuration(totalDurationMins)})
+            <div className="text-xs font-medium text-muted-foreground mb-2 flex items-center gap-2">
+              <span>Timeline: {head.name} ({formatDuration(netOperationalMins)})</span>
+              {totalCutoffMins > 0 && (
+                <span className="text-rose-400 text-[10px]">
+                  (Cutoff: -{formatDuration(totalCutoffMins)})
+                </span>
+              )}
             </div>
 
             <div className="relative">
-              {/* Time markers */}
+              {/* Time markers - starting from 0m with 30m intervals */}
               <div className="relative h-4 text-[9px] text-muted-foreground mb-1">
-                {timeMarkers.map((mins, idx) => (
+                {timeMarkers.map((marker, idx) => (
                   <span
                     key={idx}
                     className="absolute -translate-x-1/2"
-                    style={{ left: `${((mins - headStartMins) / totalDurationMins) * 100}%` }}
+                    style={{ left: `${(marker.mins / totalDurationMins) * 100}%` }}
                   >
-                    {minutesToTime(mins)}
+                    {marker.label}
                   </span>
                 ))}
               </div>
@@ -115,15 +134,36 @@ function TimelineVisualization({ headChannels }: { headChannels: ImportHeadChann
                   </div>
                   <div className="flex-1 h-5 bg-primary/20 rounded relative overflow-hidden">
                     <div className="absolute top-0 left-0 h-full w-full bg-primary/40 rounded" />
+                    
+                    {/* Overlay cutoff sections on head bar */}
+                    {cutoffSubs.map(sub => 
+                      sub.intervals.map(interval => {
+                        const intStart = timeToMinutes(interval.startTime);
+                        const intEnd = timeToMinutes(interval.endTime);
+                        const left = ((intStart - headStartMins) / totalDurationMins) * 100;
+                        const width = ((intEnd - intStart) / totalDurationMins) * 100;
+                        return (
+                          <div
+                            key={interval.id}
+                            className="absolute top-0 h-full bg-rose-500/40 rounded-sm"
+                            style={{ 
+                              left: `${Math.max(0, left)}%`, 
+                              width: `${Math.max(width, 0.5)}%`,
+                              backgroundImage: 'repeating-linear-gradient(45deg, transparent, transparent 2px, rgba(255,255,255,0.1) 2px, rgba(255,255,255,0.1) 4px)'
+                            }}
+                            title={`Cutoff: ${interval.startTime} → ${interval.endTime}`}
+                          />
+                        );
+                      })
+                    )}
                   </div>
                   <div className="w-14 text-[10px] text-muted-foreground text-right flex-shrink-0">
-                    {formatDuration(totalDurationMins)}
+                    {formatDuration(netOperationalMins)}
                   </div>
                 </div>
 
-                {/* Sub channel bars */}
-                {head.subChannels.map((sub) => {
-                  // Calculate total active time for this sub
+                {/* Sub channel bars (excluding cutoff) */}
+                {head.subChannels.filter(s => !s.isCutoff).map((sub) => {
                   const totalActiveMins = sub.intervals.reduce((acc, int) => {
                     return acc + getDurationMinutes(int.startTime, int.endTime);
                   }, 0);
@@ -176,10 +216,50 @@ function TimelineVisualization({ headChannels }: { headChannels: ImportHeadChann
                     </div>
                   );
                 })}
+
+                {/* Cutoff sub channels */}
+                {cutoffSubs.map((sub) => {
+                  const totalCutMins = sub.intervals.reduce((acc, int) => {
+                    return acc + getDurationMinutes(int.startTime, int.endTime);
+                  }, 0);
+
+                  return (
+                    <div key={sub.id} className="flex items-center gap-2">
+                      <div className="w-24 text-[10px] text-rose-400 truncate flex-shrink-0 pl-3 flex items-center gap-1">
+                        <Scissors className="w-2.5 h-2.5" />
+                        {sub.name}
+                      </div>
+                      <div className="flex-1 h-4 bg-rose-500/20 rounded relative overflow-hidden">
+                        {/* Cutoff interval bars */}
+                        {sub.intervals.map((interval) => {
+                          const intStart = timeToMinutes(interval.startTime);
+                          const intEnd = timeToMinutes(interval.endTime);
+                          const left = ((intStart - headStartMins) / totalDurationMins) * 100;
+                          const width = ((intEnd - intStart) / totalDurationMins) * 100;
+                          return (
+                            <div
+                              key={interval.id}
+                              className="absolute top-0 h-full bg-rose-500/70 rounded-sm"
+                              style={{ 
+                                left: `${Math.max(0, left)}%`, 
+                                width: `${Math.max(width, 0.5)}%`,
+                                backgroundImage: 'repeating-linear-gradient(45deg, transparent, transparent 2px, rgba(255,255,255,0.2) 2px, rgba(255,255,255,0.2) 4px)'
+                              }}
+                              title={`Cutoff: ${interval.startTime} → ${interval.endTime}`}
+                            />
+                          );
+                        })}
+                      </div>
+                      <div className="w-14 text-[10px] text-rose-400 text-right flex-shrink-0">
+                        -{formatDuration(totalCutMins)}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
 
               {/* Legend */}
-              <div className="flex items-center gap-3 mt-3 text-[9px] text-muted-foreground">
+              <div className="flex items-center gap-3 mt-3 text-[9px] text-muted-foreground flex-wrap">
                 <div className="flex items-center gap-1">
                   <div className="w-2 h-2 bg-green-500/70 rounded-sm" />
                   <span>Active</span>
@@ -191,6 +271,12 @@ function TimelineVisualization({ headChannels }: { headChannels: ImportHeadChann
                 <div className="flex items-center gap-1">
                   <div className="w-1.5 h-1.5 bg-orange-500 rounded-full" />
                   <span>Pause</span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <div className="w-2 h-2 bg-rose-500/70 rounded-sm" style={{
+                    backgroundImage: 'repeating-linear-gradient(45deg, transparent, transparent 1px, rgba(255,255,255,0.3) 1px, rgba(255,255,255,0.3) 2px)'
+                  }} />
+                  <span>Cutoff</span>
                 </div>
               </div>
             </div>
@@ -271,11 +357,28 @@ export function ImportTimelineOClock({ onClose }: ImportTimelineOClockProps) {
       if (h.id !== headId) return h;
       const newSub: ImportSubChannel = {
         id: generateId(),
-        name: `Sub ${h.subChannels.length + 1}`,
+        name: `Sub ${h.subChannels.filter(s => !s.isCutoff).length + 1}`,
         intervals: [],
         expanded: true,
+        isCutoff: false,
       };
       return { ...h, subChannels: [...h.subChannels, newSub] };
+    }));
+  };
+
+  // Add cutoff timer to head (special sub channel for non-operational time)
+  const addCutoffTimer = (headId: string) => {
+    setHeadChannels(headChannels.map(h => {
+      if (h.id !== headId) return h;
+      const cutoffCount = h.subChannels.filter(s => s.isCutoff).length;
+      const newCutoff: ImportSubChannel = {
+        id: generateId(),
+        name: `Cutoff ${cutoffCount + 1}`,
+        intervals: [],
+        expanded: true,
+        isCutoff: true,
+      };
+      return { ...h, subChannels: [...h.subChannels, newCutoff] };
     }));
   };
 
@@ -373,6 +476,15 @@ export function ImportTimelineOClock({ onClose }: ImportTimelineOClockProps) {
     }));
   };
 
+  // Calculate head summary with cutoff consideration
+  const getHeadSummary = (head: ImportHeadChannel) => {
+    const totalMins = getDurationMinutes(head.startTime, head.endTime);
+    const cutoffMins = head.subChannels
+      .filter(s => s.isCutoff)
+      .reduce((acc, s) => acc + s.intervals.reduce((intAcc, int) => intAcc + getDurationMinutes(int.startTime, int.endTime), 0), 0);
+    return { totalMins, cutoffMins, netMins: totalMins - cutoffMins };
+  };
+
   const hasData = headChannels.length > 0;
 
   return (
@@ -388,7 +500,7 @@ export function ImportTimelineOClock({ onClose }: ImportTimelineOClockProps) {
 
       <h3 className="text-sm font-semibold text-foreground mb-3">Timeline Builder (O'Clock)</h3>
       <p className="text-xs text-muted-foreground mb-4">
-        Head Channel = range waktu (07:00 → 14:00) · Sub Channel = aktivitas · Timeline = start/pause intervals
+        Head Channel = range waktu (07:00 → 14:00) · Sub Channel = aktivitas · Cutoff = waktu non-operasional
       </p>
 
       {/* Builder UI */}
@@ -403,168 +515,291 @@ export function ImportTimelineOClock({ onClose }: ImportTimelineOClockProps) {
         </button>
 
         {/* Head Channels List */}
-        {headChannels.map((head) => (
-          <div key={head.id} className="bg-muted/50 rounded-lg p-3 space-y-2">
-            {/* Head Channel Header */}
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => toggleHeadExpand(head.id)}
-                className="text-muted-foreground hover:text-foreground"
-              >
-                {head.expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-              </button>
-
-              <span className="text-xs text-primary font-medium">📌</span>
-
-              <input
-                type="text"
-                value={head.name}
-                onChange={(e) => updateHeadChannel(head.id, { name: e.target.value })}
-                className="flex-1 bg-transparent text-sm font-medium text-foreground border-none focus:outline-none focus:ring-0"
-                placeholder="Head Channel Name"
-              />
-
-              <div className="flex items-center gap-1">
-                <input
-                  type="time"
-                  value={head.startTime}
-                  onChange={(e) => updateHeadChannel(head.id, { startTime: e.target.value })}
-                  className="bg-muted rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-primary/50"
-                />
-                <span className="text-xs text-muted-foreground">→</span>
-                <input
-                  type="time"
-                  value={head.endTime}
-                  onChange={(e) => updateHeadChannel(head.id, { endTime: e.target.value })}
-                  className="bg-muted rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-primary/50"
-                />
-              </div>
-
-              <button
-                onClick={() => deleteHeadChannel(head.id)}
-                className="w-6 h-6 rounded-full hover:bg-destructive/20 hover:text-destructive flex items-center justify-center transition-colors"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-              </button>
-            </div>
-
-            {/* Head Channel Content */}
-            {head.expanded && (
-              <div className="pl-6 space-y-2">
-                {/* Add Sub Channel Button */}
+        {headChannels.map((head) => {
+          const summary = getHeadSummary(head);
+          
+          return (
+            <div key={head.id} className="bg-muted/50 rounded-lg p-3 space-y-2">
+              {/* Head Channel Header */}
+              <div className="flex items-center gap-2">
                 <button
-                  onClick={() => addSubChannel(head.id)}
-                  className="flex items-center gap-1 px-2 py-1 text-xs text-muted-foreground hover:text-foreground hover:bg-muted rounded transition-colors"
+                  onClick={() => toggleHeadExpand(head.id)}
+                  className="text-muted-foreground hover:text-foreground"
                 >
-                  <Plus className="w-3 h-3" />
-                  Add Sub Channel
+                  {head.expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
                 </button>
 
-                {/* Sub Channels */}
-                {head.subChannels.map((sub) => (
-                  <div key={sub.id} className="bg-background/50 rounded-lg p-2 space-y-2">
-                    {/* Sub Channel Header */}
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => toggleSubExpand(head.id, sub.id)}
-                        className="text-muted-foreground hover:text-foreground"
-                      >
-                        {sub.expanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
-                      </button>
+                <span className="text-xs text-primary font-medium">📌</span>
 
-                      <span className="text-[10px] text-muted-foreground">└</span>
+                <input
+                  type="text"
+                  value={head.name}
+                  onChange={(e) => updateHeadChannel(head.id, { name: e.target.value })}
+                  className="flex-1 bg-transparent text-sm font-medium text-foreground border-none focus:outline-none focus:ring-0"
+                  placeholder="Head Channel Name"
+                />
 
-                      <input
-                        type="text"
-                        value={sub.name}
-                        onChange={(e) => updateSubChannel(head.id, sub.id, { name: e.target.value })}
-                        className="flex-1 bg-transparent text-xs text-foreground border-none focus:outline-none focus:ring-0"
-                        placeholder="Sub Channel Name"
-                      />
+                <div className="flex items-center gap-1">
+                  <input
+                    type="time"
+                    value={head.startTime}
+                    onChange={(e) => updateHeadChannel(head.id, { startTime: e.target.value })}
+                    className="bg-muted rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-primary/50"
+                  />
+                  <span className="text-xs text-muted-foreground">→</span>
+                  <input
+                    type="time"
+                    value={head.endTime}
+                    onChange={(e) => updateHeadChannel(head.id, { endTime: e.target.value })}
+                    className="bg-muted rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-primary/50"
+                  />
+                </div>
 
-                      <span className="text-[10px] text-muted-foreground">
-                        {sub.intervals.length} interval
-                      </span>
+                {/* Duration with cutoff info */}
+                <div className="text-[10px] text-muted-foreground flex items-center gap-1">
+                  <span className="font-medium text-foreground">{formatDuration(summary.netMins)}</span>
+                  {summary.cutoffMins > 0 && (
+                    <span className="text-rose-400">(-{formatDuration(summary.cutoffMins)})</span>
+                  )}
+                </div>
 
-                      <button
-                        onClick={() => deleteSubChannel(head.id, sub.id)}
-                        className="w-5 h-5 rounded-full hover:bg-destructive/20 hover:text-destructive flex items-center justify-center transition-colors"
-                      >
-                        <Trash2 className="w-3 h-3" />
-                      </button>
-                    </div>
+                <button
+                  onClick={() => deleteHeadChannel(head.id)}
+                  className="w-6 h-6 rounded-full hover:bg-destructive/20 hover:text-destructive flex items-center justify-center transition-colors"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
 
-                    {/* Sub Channel Intervals */}
-                    {sub.expanded && (
-                      <div className="pl-5 space-y-1">
-                        {/* Add Interval Button */}
+              {/* Head Channel Content */}
+              {head.expanded && (
+                <div className="pl-6 space-y-2">
+                  {/* Action Buttons */}
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => addSubChannel(head.id)}
+                      className="flex items-center gap-1 px-2 py-1 text-xs text-muted-foreground hover:text-foreground hover:bg-muted rounded transition-colors"
+                    >
+                      <Plus className="w-3 h-3" />
+                      Add Sub Channel
+                    </button>
+
+                    {/* Apple-like Cutoff Timer Button */}
+                    <button
+                      onClick={() => addCutoffTimer(head.id)}
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-full transition-all
+                        bg-gradient-to-r from-rose-500 to-pink-500 text-white
+                        shadow-lg shadow-rose-500/25 hover:shadow-rose-500/40
+                        hover:scale-105 active:scale-95
+                        border border-rose-400/30"
+                    >
+                      <Scissors className="w-3 h-3" />
+                      Add Cutoff Timer
+                    </button>
+                  </div>
+
+                  {/* Sub Channels (Regular) */}
+                  {head.subChannels.filter(s => !s.isCutoff).map((sub) => (
+                    <div key={sub.id} className="bg-background/50 rounded-lg p-2 space-y-2">
+                      {/* Sub Channel Header */}
+                      <div className="flex items-center gap-2">
                         <button
-                          onClick={() => addInterval(head.id, sub.id)}
-                          className="flex items-center gap-1 px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground hover:bg-muted/50 rounded transition-colors"
+                          onClick={() => toggleSubExpand(head.id, sub.id)}
+                          className="text-muted-foreground hover:text-foreground"
                         >
-                          <Plus className="w-2.5 h-2.5" />
-                          Add Timeline (Start → Pause)
+                          {sub.expanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
                         </button>
 
-                        {/* Intervals */}
-                        {sub.intervals.map((interval, idx) => (
-                          <div key={interval.id} className="flex items-center gap-2 text-[10px]">
-                            <span className="text-muted-foreground w-4">{idx + 1}.</span>
+                        <span className="text-[10px] text-muted-foreground">└</span>
 
-                            <div className="flex items-center gap-1">
-                              <span className="text-green-500">▶</span>
-                              <input
-                                type="time"
-                                value={interval.startTime}
-                                onChange={(e) => updateInterval(head.id, sub.id, interval.id, { startTime: e.target.value })}
-                                className="bg-muted rounded px-1.5 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-primary/50"
-                              />
-                            </div>
+                        <input
+                          type="text"
+                          value={sub.name}
+                          onChange={(e) => updateSubChannel(head.id, sub.id, { name: e.target.value })}
+                          className="flex-1 bg-transparent text-xs text-foreground border-none focus:outline-none focus:ring-0"
+                          placeholder="Sub Channel Name"
+                        />
 
-                            <span className="text-muted-foreground">→</span>
+                        <span className="text-[10px] text-muted-foreground">
+                          {sub.intervals.length} interval
+                        </span>
 
-                            <div className="flex items-center gap-1">
-                              <span className="text-orange-500">⏸</span>
-                              <input
-                                type="time"
-                                value={interval.endTime}
-                                onChange={(e) => updateInterval(head.id, sub.id, interval.id, { endTime: e.target.value })}
-                                className="bg-muted rounded px-1.5 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-primary/50"
-                              />
-                            </div>
-
-                            <span className="text-muted-foreground">
-                              ({formatDuration(getDurationMinutes(interval.startTime, interval.endTime))} aktif)
-                            </span>
-
-                            <button
-                              onClick={() => deleteInterval(head.id, sub.id, interval.id)}
-                              className="w-4 h-4 rounded-full hover:bg-destructive/20 hover:text-destructive flex items-center justify-center transition-colors ml-auto"
-                            >
-                              <X className="w-2.5 h-2.5" />
-                            </button>
-                          </div>
-                        ))}
-
-                        {sub.intervals.length === 0 && (
-                          <div className="text-[10px] text-muted-foreground italic pl-4">
-                            Belum ada timeline. Klik "Add Timeline" untuk menambahkan.
-                          </div>
-                        )}
+                        <button
+                          onClick={() => deleteSubChannel(head.id, sub.id)}
+                          className="w-5 h-5 rounded-full hover:bg-destructive/20 hover:text-destructive flex items-center justify-center transition-colors"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
                       </div>
-                    )}
-                  </div>
-                ))}
 
-                {head.subChannels.length === 0 && (
-                  <div className="text-xs text-muted-foreground italic pl-2">
-                    Belum ada sub channel
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        ))}
+                      {/* Sub Channel Intervals */}
+                      {sub.expanded && (
+                        <div className="pl-5 space-y-1">
+                          {/* Add Interval Button */}
+                          <button
+                            onClick={() => addInterval(head.id, sub.id)}
+                            className="flex items-center gap-1 px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground hover:bg-muted/50 rounded transition-colors"
+                          >
+                            <Plus className="w-2.5 h-2.5" />
+                            Add Timeline (Start → Pause)
+                          </button>
+
+                          {/* Intervals */}
+                          {sub.intervals.map((interval, idx) => (
+                            <div key={interval.id} className="flex items-center gap-2 text-[10px]">
+                              <span className="text-muted-foreground w-4">{idx + 1}.</span>
+
+                              <div className="flex items-center gap-1">
+                                <span className="text-green-500">▶</span>
+                                <input
+                                  type="time"
+                                  value={interval.startTime}
+                                  onChange={(e) => updateInterval(head.id, sub.id, interval.id, { startTime: e.target.value })}
+                                  className="bg-muted rounded px-1.5 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-primary/50"
+                                />
+                              </div>
+
+                              <span className="text-muted-foreground">→</span>
+
+                              <div className="flex items-center gap-1">
+                                <span className="text-orange-500">⏸</span>
+                                <input
+                                  type="time"
+                                  value={interval.endTime}
+                                  onChange={(e) => updateInterval(head.id, sub.id, interval.id, { endTime: e.target.value })}
+                                  className="bg-muted rounded px-1.5 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-primary/50"
+                                />
+                              </div>
+
+                              <span className="text-muted-foreground">
+                                ({formatDuration(getDurationMinutes(interval.startTime, interval.endTime))} aktif)
+                              </span>
+
+                              <button
+                                onClick={() => deleteInterval(head.id, sub.id, interval.id)}
+                                className="w-4 h-4 rounded-full hover:bg-destructive/20 hover:text-destructive flex items-center justify-center transition-colors ml-auto"
+                              >
+                                <X className="w-2.5 h-2.5" />
+                              </button>
+                            </div>
+                          ))}
+
+                          {sub.intervals.length === 0 && (
+                            <div className="text-[10px] text-muted-foreground italic pl-4">
+                              Belum ada timeline. Klik "Add Timeline" untuk menambahkan.
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+
+                  {/* Cutoff Timer Sub Channels */}
+                  {head.subChannels.filter(s => s.isCutoff).map((sub) => (
+                    <div key={sub.id} className="rounded-lg p-2 space-y-2 border-2 border-rose-500/30 bg-gradient-to-br from-rose-500/10 to-pink-500/10">
+                      {/* Cutoff Header */}
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => toggleSubExpand(head.id, sub.id)}
+                          className="text-rose-400 hover:text-rose-300"
+                        >
+                          {sub.expanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+                        </button>
+
+                        <Scissors className="w-3 h-3 text-rose-400" />
+
+                        <input
+                          type="text"
+                          value={sub.name}
+                          onChange={(e) => updateSubChannel(head.id, sub.id, { name: e.target.value })}
+                          className="flex-1 bg-transparent text-xs text-rose-300 font-medium border-none focus:outline-none focus:ring-0"
+                          placeholder="Cutoff Name"
+                        />
+
+                        <span className="text-[10px] text-rose-400 font-medium px-2 py-0.5 rounded-full bg-rose-500/20">
+                          Non-Operational
+                        </span>
+
+                        <button
+                          onClick={() => deleteSubChannel(head.id, sub.id)}
+                          className="w-5 h-5 rounded-full hover:bg-rose-500/30 text-rose-400 hover:text-rose-300 flex items-center justify-center transition-colors"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      </div>
+
+                      {/* Cutoff Intervals */}
+                      {sub.expanded && (
+                        <div className="pl-5 space-y-1">
+                          {/* Add Cutoff Interval Button */}
+                          <button
+                            onClick={() => addInterval(head.id, sub.id)}
+                            className="flex items-center gap-1 px-2 py-0.5 text-[10px] text-rose-400 hover:text-rose-300 hover:bg-rose-500/20 rounded transition-colors"
+                          >
+                            <Plus className="w-2.5 h-2.5" />
+                            Add Cutoff Time
+                          </button>
+
+                          {/* Cutoff Intervals */}
+                          {sub.intervals.map((interval, idx) => (
+                            <div key={interval.id} className="flex items-center gap-2 text-[10px]">
+                              <span className="text-rose-400 w-4">{idx + 1}.</span>
+
+                              <div className="flex items-center gap-1">
+                                <span className="text-rose-400">✂</span>
+                                <input
+                                  type="time"
+                                  value={interval.startTime}
+                                  onChange={(e) => updateInterval(head.id, sub.id, interval.id, { startTime: e.target.value })}
+                                  className="bg-rose-500/20 border border-rose-500/30 rounded px-1.5 py-0.5 text-[10px] text-rose-300 focus:outline-none focus:ring-1 focus:ring-rose-500/50"
+                                />
+                              </div>
+
+                              <span className="text-rose-400">→</span>
+
+                              <div className="flex items-center gap-1">
+                                <span className="text-rose-400">✂</span>
+                                <input
+                                  type="time"
+                                  value={interval.endTime}
+                                  onChange={(e) => updateInterval(head.id, sub.id, interval.id, { endTime: e.target.value })}
+                                  className="bg-rose-500/20 border border-rose-500/30 rounded px-1.5 py-0.5 text-[10px] text-rose-300 focus:outline-none focus:ring-1 focus:ring-rose-500/50"
+                                />
+                              </div>
+
+                              <span className="text-rose-400 font-medium">
+                                (-{formatDuration(getDurationMinutes(interval.startTime, interval.endTime))})
+                              </span>
+
+                              <button
+                                onClick={() => deleteInterval(head.id, sub.id, interval.id)}
+                                className="w-4 h-4 rounded-full hover:bg-rose-500/30 text-rose-400 hover:text-rose-300 flex items-center justify-center transition-colors ml-auto"
+                              >
+                                <X className="w-2.5 h-2.5" />
+                              </button>
+                            </div>
+                          ))}
+
+                          {sub.intervals.length === 0 && (
+                            <div className="text-[10px] text-rose-400/70 italic pl-4">
+                              Tambahkan waktu cutoff untuk mengurangi durasi dari Head.
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+
+                  {head.subChannels.length === 0 && (
+                    <div className="text-xs text-muted-foreground italic pl-2">
+                      Belum ada sub channel atau cutoff timer
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
 
         {/* Empty state */}
         {!hasData && (
